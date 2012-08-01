@@ -1,0 +1,203 @@
+/* This file is (C) copyright 2001 Software Improvements, Pty Ltd */
+
+/* This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation; either version 2 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
+#include <stdlib.h>
+#include <common/database.h>
+#include <common/evacs.h>
+#include "handle_few_votes.h"
+#include "check_votes.h"
+
+struct few_vote_polling_places polling_place_list = 
+{.num_places = 0};
+
+/* DDS3.8: Save Polling Place with Few Votes */
+static void save_polling_place_with_few_votes(unsigned int polling_place_code,
+					      unsigned int electorate_code)
+{
+	polling_place_list.polling_place_code[polling_place_list.num_places] 
+		= polling_place_code;
+	polling_place_list.electorate_code[polling_place_list.num_places] 
+		= electorate_code;
+	polling_place_list.num_places++;
+}
+
+/* DDS3.8: Get Polling Place with Few Votes */
+static struct few_vote_polling_places *get_polling_places_with_few_votes(void)
+{
+	return &polling_place_list;
+}
+
+/* Get votes from database */
+static unsigned int get_votes(struct vote_list *votes)
+{
+	PGconn *conn=connect_db(LOAD1DB_NAME);
+	PGresult *result;
+	unsigned int num_rows, i;
+
+	result = SQL_query(conn,
+			   "SELECT index,polling_place_code, "
+			   "electorate_code "
+			   "FROM confirmed_vote;");
+
+	num_rows = PQntuples(result);
+
+	votes = malloc(sizeof(*votes) + 
+		       sizeof(struct vote) * num_rows);
+
+	for (i=0; i<num_rows; i++) {
+		votes->vote[i].polling_place_code 
+			= atoi(PQgetvalue(result, i, 1));
+		votes->vote[i].electorate_code 
+			= atoi(PQgetvalue(result,i,2));
+		votes->vote[i].preferences 
+			= get_prefs_for_vote(conn,
+					     atoi(PQgetvalue(result,i,0)));
+	}
+
+	PQclear(result);
+	PQfinish(conn);
+
+	return num_rows;
+}
+
+/* DDS3.8: Copy Vote */
+static void copy_vote(PGconn *conn, struct vote vote)
+{
+	unsigned int i;
+
+	begin(conn);
+	SQL_command(conn,
+		    "INSERT INTO confirmed_vote"
+		    "(electorate_code,polling_place_code) "
+		    "VALUES(%u,%u);",
+		    vote.electorate_code,vote.polling_place_code);
+	
+	for (i=0;i<vote.preferences.num_preferences;i++) {
+		SQL_command(conn,
+			    "INSERT INTO confirmed_preference"
+			    "(group_index,db_candidate_index,prefnum) "
+			    "VALUES(%u,%u,%u);",
+			    vote.preferences.candidates[i].group_index,
+			    vote.preferences.candidates[i].db_candidate_index,
+			    vote.preferences.candidates[i].prefnum);
+	}
+}
+
+/* Get Polling Place Code from Polling Place Name */
+static unsigned int resolve_polling_place_code(PGconn *conn, char *pp_name)
+{
+	return(SQL_singleton_int(conn,
+                                 "SELECT code FROM polling_place "
+                                 "WHERE UPPER(name) = UPPER('%s');",
+                                 pp_name));
+}
+
+
+/* DDS3.8: Handle Few Votes */
+void handle_few_votes(void)
+{
+	struct vote_list *votes, votes_in_elec[NUMBER_OF_ELECTORATES];
+	unsigned int num_votes, i, j, csc_code, 
+		num_votes_in_elec[NUMBER_OF_ELECTORATES], ecode, 
+		num_preferences, polling_place_code;
+	struct few_vote_polling_places *pp;
+	PGconn *conn=connect_db(LOAD1DB_NAME);
+	char *csc_name;
+
+	for (i=0; i<NUMBER_OF_ELECTORATES; i++) {
+		num_votes_in_elec[i] = 0;
+	}
+
+	/* Fill out the votes structure from the database */
+	num_votes = get_votes(votes);
+	
+	/* Seperate votes into electorates */
+	for (i=0; i<num_votes; i++) {
+		
+		ecode = votes->vote[i].electorate_code;
+		votes_in_elec[ecode].vote[num_votes_in_elec[ecode]]
+			.electorate_code = ecode;
+		
+		votes_in_elec[ecode].vote[num_votes_in_elec[ecode]]
+			.polling_place_code 
+			= votes->vote[i].polling_place_code;
+		
+		num_preferences = votes->vote[i].preferences.num_preferences;
+		votes_in_elec[ecode].vote[num_votes_in_elec[ecode]]
+			.preferences.num_preferences = num_preferences;
+
+		for (j=0; j<num_preferences; j++) {
+			votes_in_elec[ecode].vote[num_votes_in_elec[ecode]]
+				.preferences.candidates[j].group_index 
+				= votes->vote[i].preferences.candidates[j]
+				.group_index;
+			votes_in_elec[ecode].vote[num_votes_in_elec[ecode]]
+				.preferences.candidates[j].db_candidate_index 
+				= votes->vote[i].preferences.candidates[j]
+				.db_candidate_index;
+			votes_in_elec[ecode].vote[num_votes_in_elec[ecode]]
+				.preferences.candidates[j].prefnum 
+				= votes->vote[i].preferences.candidates[j]
+				.prefnum;
+		}
+		
+		num_votes_in_elec[ecode]++;
+	}
+
+	/* Make list of polling places with less than 20 votes per electorate*/
+	for (ecode=0; ecode<NUMBER_OF_ELECTORATES; ecode++) {
+		polling_place_code 
+			= votes_in_elec[ecode].vote[0].polling_place_code;
+		if (num_votes_in_elec[ecode] < 20) {
+			save_polling_place_with_few_votes(polling_place_code,
+							  ecode);
+		}
+	}
+
+	/* Get list of polling places with less than 20 votes per electorate */
+	pp = get_polling_places_with_few_votes();
+
+	csc_name = sprintf_malloc("Central Scrutiny Centre");
+	csc_code = resolve_polling_place_code(conn, csc_name);
+
+	/* Make whole polling place load ONE transaction */
+	begin(conn);
+	for (i=0; i<num_votes; i++) {
+		for (j=0; j<pp->num_places; j++) {
+			/* If vote is in list, change polling_place_code */
+			if ((votes->vote[i].polling_place_code 
+			     == pp->polling_place_code[j]) 
+			    && (votes->vote[i].electorate_code 
+				== pp->electorate_code[j])) {
+				votes->vote[i].polling_place_code = csc_code;
+			}
+		}
+
+		/* Save the vote to Confirmed Vote Details */
+		copy_vote(conn, votes->vote[i]);
+	}
+
+	/* Mark polling place as loaded */
+	SQL_command(conn,"INSERT INTO polling_place_loaded VALUES(%u);",
+		    votes->vote[0].polling_place_code);
+	commit(conn);
+       	PQfinish(conn);
+		
+}
+
+int main(void)
+{
+	handle_few_votes();
+}

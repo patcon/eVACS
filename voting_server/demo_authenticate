@@ -1,0 +1,24 @@
+#! /bin/sh
+
+# Dummy authenticate.  Always return same electorate.
+echo -e "Content-type: application/x-www-form-urlencoded\r"
+echo -e "\r"
+
+# If barcode starts with A, it is treated as electrate 1, b=2, c=3, other=error
+BARCODE=`cut -d= -f2-`
+
+case "$BARCODE" in
+	[Aa]*) NAME=Brindabella; CODE=1; SEAT=5; NUM=9;;
+	[bB]*) NAME=Ginninderra; CODE=2; SEAT=5; NUM=9;;
+	[cC]*) NAME=Molonglo; CODE=3; SEAT=7; NUM=12;;
+	*) NAME=Ginninderra; CODE=2; SEAT=5; NUM=8;;
+esac
+
+echo -n "error=0&electorate_name=$NAME&electorate_code=$CODE&electorate_seats=$SEAT&num_groups=$NUM"
+case $CODE in
+	1) echo -n "&group0=5&group1=2&group2=2&group3=5&group4=3&group5=2&group6=2&group7=2&group8=4";;
+
+	2) echo -n "&group0=3&group1=2&group2=2&group3=2&group4=2&group5=2&group6=5&group7=5&group8=3";;
+	3) echo -n "&group0=4&group1=7&group2=3&group3=2&group4=2&group5=4&group6=2&group7=7&group8=2&group9=2&group10=4&group11=2";;
+esac
+exit 0

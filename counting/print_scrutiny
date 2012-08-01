@@ -1,0 +1,48 @@
+#! /bin/sh
+# Start script for the counting server.
+
+# If printer is postscript, set this to 1
+POSTSCRIPT=0
+
+# printer type (as known to ghostscript)
+PRINTER_DEVICE="lj4dith"
+PAPERSIZE="a4"
+OUTPUTDIR="/tmp"
+
+# root directory (where the scripts are)
+ROOT=/root
+
+# command to convert ps into bitmap
+GSCOMMAND="gs -q -sDEVICE=$PRINTER_DEVICE -r600x600 -sPAPERSIZE=$PAPERSIZE -dNOPAUSE -dSAFER -sOutputFile=$OUTPUTDIR/raw"
+
+# post-process ps to BOLD 'so& so was elected n' statements in table2
+$ROOT/bold_elected $OUTPUTDIR/table2.ps
+mv  $OUTPUTDIR/table2.ps.bold  $OUTPUTDIR/table2.ps
+rm -f  $OUTPUTDIR/table2.ps.bold
+
+# Centre postscript output on a3/a4 page.
+$ROOT/normalise.sh $PAPERSIZE $OUTPUTDIR/table1.ps $OUTPUTDIR/table2.ps
+
+if [ $POSTSCRIPT -eq 0 ]; then
+    # FOR NON-POSTSCRIPT PRINTER
+    for file in $OUTPUTDIR/table*.ps.*; do
+	$GSCOMMAND $file < $ROOT/quit
+	lpr $OUTPUTDIR/raw	   
+	done
+    else
+	# FOR POSTSCRIPT PRINTER
+	lpr $OUTPUTDIR/table1.ps.*
+	lpr $OUTPUTDIR/table2.ps.*
+fi
+
+# remove normalised pages ready for another scrutiny
+rm -f $OUTPUTDIR/table*.ps.*
+
+exit 0	
+
+
+
+
+
+
+
